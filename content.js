@@ -23,6 +23,20 @@ if (!window.__rtl_content_script_initialized) {
         direction: rtl !important;
         text-align: right !important;
       }
+      /* Elements with hardcoded dir=ltr that contain RTL text (anywhere on page) */
+      [data-rtl-fixed],
+      [data-rtl-fixed] *:not(pre):not(code):not(pre *):not(code *):not(.katex):not(.katex *):not(svg):not(svg *) {
+        direction: rtl !important;
+        text-align: right !important;
+      }
+      [data-rtl-fixed] pre,
+      [data-rtl-fixed] pre *,
+      [data-rtl-fixed] code,
+      [data-rtl-fixed] .katex {
+        direction: ltr !important;
+        text-align: left !important;
+        unicode-bidi: isolate;
+      }
       /* Keep code blocks LTR */
       [${RTL_ATTR}] pre,
       [${RTL_ATTR}] pre *,
@@ -60,6 +74,65 @@ if (!window.__rtl_content_script_initialized) {
     el.style.removeProperty('direction');
     el.style.removeProperty('text-align');
     el.title = '';
+  }
+
+  // --- Fix hardcoded dir="ltr" elements that contain Persian/Arabic/Hebrew text,
+  // even if they are outside the selected root. Also mirror blockquote/list
+  // side borders & paddings so they don't look broken in RTL. ---
+  const RTL_CHARS = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
+
+  function mirrorSides(el) {
+    if (el.hasAttribute('data-rtl-mirrored')) return;
+    const cs = getComputedStyle(el);
+    const bl = parseFloat(cs.borderLeftWidth) || 0;
+    const pl = parseFloat(cs.paddingLeft) || 0;
+    const ml = parseFloat(cs.marginLeft) || 0;
+    if (bl > 0) {
+      el.style.setProperty('border-right', `${cs.borderLeftWidth} ${cs.borderLeftStyle} ${cs.borderLeftColor}`, 'important');
+      el.style.setProperty('border-left', 'none', 'important');
+    }
+    if (pl > 0) {
+      el.style.setProperty('padding-right', cs.paddingLeft, 'important');
+      el.style.setProperty('padding-left', '0', 'important');
+    }
+    if (ml > 0) {
+      el.style.setProperty('margin-right', cs.marginLeft, 'important');
+      el.style.setProperty('margin-left', '0', 'important');
+    }
+    el.setAttribute('data-rtl-mirrored', '1');
+  }
+
+  function fixHardcodedLTR() {
+    try {
+      ensureOverrideStyle();
+      document.querySelectorAll('[dir="ltr"]').forEach(el => {
+        if (el.closest('pre, code')) return;
+        if (el.hasAttribute('data-rtl-fixed')) return;
+        // Only touch elements whose own text contains RTL characters
+        if (!RTL_CHARS.test(el.textContent || '')) return;
+        // Skip if it is an ancestor-level container (e.g. whole page); only
+        // fix reasonably local blocks
+        if (el === document.body || el === document.documentElement) return;
+        el.setAttribute('data-rtl-fixed', '1');
+      });
+      // Mirror borders/paddings for blockquotes and lists in RTL scope
+      document.querySelectorAll(
+        `[${RTL_ATTR}] blockquote, [${RTL_ATTR}] ul, [${RTL_ATTR}] ol, ` +
+        `[data-rtl-fixed] blockquote, [data-rtl-fixed] ul, [data-rtl-fixed] ol, ` +
+        `blockquote[data-rtl-fixed], ul[data-rtl-fixed], ol[data-rtl-fixed]`
+      ).forEach(mirrorSides);
+    } catch (e) {
+      console.error('[Content Text Direction] fixHardcodedLTR error:', e);
+    }
+  }
+
+  function clearFixedLTR() {
+    document.querySelectorAll('[data-rtl-fixed]').forEach(el => el.removeAttribute('data-rtl-fixed'));
+    document.querySelectorAll('[data-rtl-mirrored]').forEach(el => {
+      ['border-left', 'border-right', 'padding-left', 'padding-right', 'margin-left', 'margin-right']
+        .forEach(p => el.style.removeProperty(p));
+      el.removeAttribute('data-rtl-mirrored');
+    });
   }
 
   function getElementByXPath(xpath) {
@@ -125,7 +198,10 @@ if (!window.__rtl_content_script_initialized) {
 
           function debouncedApply() {
             if (debounceTimer) clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(applyRTLIfFound, 100);
+            debounceTimer = setTimeout(() => {
+              applyRTLIfFound();
+              fixHardcodedLTR();
+            }, 100);
           }
 
           rtlObserver = new MutationObserver(() => {
@@ -165,6 +241,7 @@ if (!window.__rtl_content_script_initialized) {
 
           // Initial application
           applyRTLIfFound();
+          fixHardcodedLTR();
         } catch (e) {
           console.error('[Content Text Direction] Error in setupRTLSPA:', e);
         }
@@ -263,6 +340,7 @@ if (!window.__rtl_content_script_initialized) {
             if (el) roots.add(el);
           }
           roots.forEach(unmarkRTLRoot);
+          clearFixedLTR();
           removeOverrideStyle();
 
           if (rtlObserver) {
